@@ -16,3 +16,6 @@ CREATE TABLE IF NOT EXISTS audio_records (
 CREATE INDEX idx_audio_records_user_id ON audio_records(user_id);
 CREATE INDEX idx_audio_records_status ON audio_records(status);
 CREATE INDEX idx_audio_records_task_id ON audio_records(task_id);
+-- Добавляем индекс для полнотекстового поиска
+CREATE INDEX idx_audio_records_text_search ON audio_records 
+  USING gin(to_tsvector('russian', COALESCE(normalized_text, text)));

@@ -50,6 +50,7 @@ func (h *BotHandlers) Register(b *tele.Bot) {
 	b.Handle("/start", h.handleStart)
 	b.Handle("/list", h.handleList)
 	b.Handle("/get", h.handleGet)
+	b.Handle("/find", h.handleFind)
 	b.Handle("/chat", h.handleChat)
 	b.Handle("/summary", h.handleSqueeze)
 	b.Handle(tele.OnAudio, h.handleAudio)
@@ -274,7 +275,7 @@ func splitMessage(message string, maxLen int) []string {
 			parts = append(parts, message)
 			break
 		}
-		// Ищем последний пробел перед maxLen
+		// Ищем последний перенос строки или пробел перед maxLen
 		cutIndex := strings.LastIndex(message[:maxLen], "\n")
 		if cutIndex == -1 {
 			cutIndex = strings.LastIndex(message[:maxLen], " ")
@@ -616,4 +617,171 @@ func (h *BotHandlers) handleSqueeze(c tele.Context) error {
 		dateStr, record.ID, escapedSummary, record.ID)
 
 	return c.Send(message, tele.ModeMarkdown)
+}
+
+// handleFind обрабатывает команду /find <фраза> - поиск по тексту встреч
+func (h *BotHandlers) handleFind(c tele.Context) error {
+	user := c.Sender()
+	args := c.Args()
+
+	logger := h.logger.With(
+		zap.Int64("user_id", user.ID),
+		zap.String("username", user.Username),
+		zap.Any("args", args),
+	)
+
+	logger.Info("Received /find command")
+
+	// Проверяем наличие поискового запроса
+	if len(args) == 0 {
+		return c.Send("❌ Укажите текст для поиска. Пример: `/find важная встреча`", tele.ModeMarkdown)
+	}
+
+	// Собираем поисковую фразу
+	searchQuery := strings.Join(args, " ")
+
+	// Отправляем сообщение о начале поиска
+	c.Send("🔍 Ищу совпадения...")
+
+	// Получаем внутренний ID пользователя
+	userDBID, err := h.userRepo.GetOrCreateUser(user.ID)
+	if err != nil {
+		logger.Error("Failed to get user", zap.Error(err))
+		return c.Send("❌ Ошибка при получении данных пользователя.")
+	}
+
+	// Выполняем поиск
+	matches, err := h.audioRepo.SearchRecords(userDBID, searchQuery)
+	if err != nil {
+		logger.Error("Failed to search records", zap.Error(err))
+		return c.Send("❌ Ошибка при поиске. Попробуйте позже.")
+	}
+
+	if len(matches) == 0 {
+		return c.Send(fmt.Sprintf("🔍 По запросу \"%s\" ничего не найдено.", searchQuery))
+	}
+
+	// Формируем ответ
+	var response strings.Builder
+	response.WriteString(fmt.Sprintf("🔍 *Результаты поиска: \"%s\"*\n\n", searchQuery))
+
+	for i, match := range matches {
+		// Ограничиваем количество результатов (максимум 10)
+		if i >= 10 {
+			response.WriteString(fmt.Sprintf("\n_... и еще %d результатов_", len(matches)-10))
+			break
+		}
+
+		// Форматируем дату
+		dateStr := match.CreatedAt.Format("02.01.2006 15:04")
+
+		// Добавляем ID и дату
+		response.WriteString(fmt.Sprintf("*ID: %d* | %s\n", match.ID, dateStr))
+
+		// Добавляем сниппет с подсветкой
+		snippet := highlightSnippet(match.Text, searchQuery)
+		response.WriteString(fmt.Sprintf("📝 %s\n", snippet))
+
+		// Добавляем команды
+		response.WriteString(fmt.Sprintf("👉 `/get %d` | `/squeeze %d`\n\n", match.ID, match.ID))
+	}
+
+	// Отправляем результат
+	if len(response.String()) > 4096 {
+		// Если ответ слишком длинный, разбиваем
+		parts := splitMessage(response.String(), 4096)
+		for i, part := range parts {
+			if i == 0 {
+				c.Send(part, tele.ModeMarkdown)
+			} else {
+				c.Send(part)
+			}
+		}
+	} else {
+		return c.Send(response.String(), tele.ModeMarkdown)
+	}
+
+	return nil
+}
+
+// highlightSnippet создает сниппет текста с подсветкой найденного слова
+func highlightSnippet(text, searchQuery string) string {
+	if text == "" {
+		return "[текст отсутствует]"
+	}
+
+	// Приводим к нижнему регистру для поиска
+	lowerText := strings.ToLower(text)
+	lowerQuery := strings.ToLower(searchQuery)
+
+	// Разбиваем поисковый запрос на слова
+	searchWords := strings.Fields(lowerQuery)
+	if len(searchWords) == 0 {
+		searchWords = []string{lowerQuery}
+	}
+
+	// Ищем первое вхождение любого из слов
+	firstPos := -1
+	var matchedWord string
+
+	for _, word := range searchWords {
+		pos := strings.Index(lowerText, word)
+		if pos != -1 && (firstPos == -1 || pos < firstPos) {
+			firstPos = pos
+			matchedWord = word
+		}
+	}
+
+	if firstPos == -1 {
+		// Если слово не найдено (хотя по идее должно быть), возвращаем начало текста
+		if len(text) > 100 {
+			return text[:100] + "..."
+		}
+		return text
+	}
+
+	// Определяем границы сниппета (примерно 100 символов, по 40-50 до и после)
+	start := firstPos - 50
+	if start < 0 {
+		start = 0
+	}
+
+	end := firstPos + len(matchedWord) + 50
+	if end > len(text) {
+		end = len(text)
+	}
+
+	// Если сниппет не начинается с начала, добавляем многоточие
+	snippet := ""
+	if start > 0 {
+		snippet += "..."
+	}
+
+	// Добавляем текст до найденного слова
+	snippet += text[start:firstPos]
+
+	// Добавляем подсвеченное слово
+	snippet += fmt.Sprintf("*%s*", text[firstPos:firstPos+len(matchedWord)])
+
+	// Добавляем текст после слова
+	snippet += text[firstPos+len(matchedWord) : end]
+
+	if end < len(text) {
+		snippet += "..."
+	}
+
+	// Если сниппет слишком длинный, обрезаем
+	if len(snippet) > 200 {
+		// Ищем пробелы для красивого обрезания
+		if len(snippet) > 200 {
+			lastSpace := strings.LastIndex(snippet[:200], " ")
+			if lastSpace > 0 {
+				snippet = snippet[:lastSpace] + "..."
+			} else {
+				snippet = snippet[:197] + "..."
+			}
+		}
+	}
+
+	return snippet
 }

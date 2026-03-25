@@ -400,7 +400,7 @@ func (p *AudioProcessor) checkRecordStatus(rec models.AudioRecord) {
 			if displayText == "" {
 				displayText = text
 			}
-			message := fmt.Sprintf("🎤 *Результат распознавания встречи #%d:*\n\n%s\n\n---\n📌 Краткая выжимка: `/summury %d`\n📝 Полный текст: `/get %d`",
+			message := fmt.Sprintf("🎤 *Результат распознавания встречи #%d:*\n\n%s\n\n---\n📌 Краткая выжимка: `/summary %d`\n📝 Полный текст: `/get %d`",
 				rec.ID, displayText, rec.ID, rec.ID)
 			p.bot.Send(recipient, message, tele.ModeMarkdown)
 		}

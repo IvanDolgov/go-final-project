@@ -257,3 +257,56 @@ func (r *AudioRepository) GetExpiredTasks(maxAge time.Duration) ([]models.AudioR
 	}
 	return records, nil
 }
+
+// SearchMatch структура для результата поиска
+type SearchMatch struct {
+	ID        int64
+	Text      string
+	CreatedAt time.Time
+}
+
+// SearchRecords ищет записи пользователя по тексту
+func (r *AudioRepository) SearchRecords(userID int64, searchQuery string) ([]SearchMatch, error) {
+	// Используем полнотекстовый поиск PostgreSQL
+	query := `
+		SELECT id, COALESCE(normalized_text, text, ''), created_at
+		FROM audio_records
+		WHERE user_id = $1 
+		  AND status = 'completed'
+		  AND (normalized_text ILIKE $2 OR text ILIKE $2)
+		ORDER BY created_at DESC
+	`
+
+	// Формируем шаблон для поиска
+	searchPattern := "%" + searchQuery + "%"
+
+	rows, err := r.db.Query(query, userID, searchPattern)
+	if err != nil {
+		r.logger.Error("Failed to search records",
+			zap.Error(err),
+			zap.Int64("user_id", userID),
+			zap.String("search", searchQuery))
+		return nil, fmt.Errorf("failed to search records: %w", err)
+	}
+	defer rows.Close()
+
+	var matches []SearchMatch
+	for rows.Next() {
+		var match SearchMatch
+		var text string
+		err := rows.Scan(&match.ID, &text, &match.CreatedAt)
+		if err != nil {
+			r.logger.Error("Failed to scan search result", zap.Error(err))
+			continue
+		}
+		match.Text = text
+		matches = append(matches, match)
+	}
+
+	r.logger.Info("Search completed",
+		zap.Int64("user_id", userID),
+		zap.String("query", searchQuery),
+		zap.Int("matches", len(matches)))
+
+	return matches, nil
+}
