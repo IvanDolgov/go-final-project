@@ -155,7 +155,7 @@ func (p *AudioProcessor) processJob(job queue.Job) queue.Result {
 	file, err := job.Chat.Bot().File(&tele.File{FileID: job.FileID})
 	if err != nil {
 		logger.Error("Failed to get file from Telegram", zap.Error(err))
-		p.audioRepo.UpdateResult(record.ID, "Ошибка скачивания файла", "", models.StatusFailed)
+		p.audioRepo.UpdateResult(record.ID, "Ошибка скачивания файла", "", "", models.StatusFailed)
 		result.Success = false
 		result.Error = "Ошибка скачивания файла"
 		result.Message = "❌ Не удалось скачать аудиофайл."
@@ -165,7 +165,7 @@ func (p *AudioProcessor) processJob(job queue.Job) queue.Result {
 	fileData, err := io.ReadAll(file)
 	if err != nil {
 		logger.Error("Failed to read file data", zap.Error(err))
-		p.audioRepo.UpdateResult(record.ID, "Ошибка чтения файла", "", models.StatusFailed)
+		p.audioRepo.UpdateResult(record.ID, "Ошибка чтения файла", "", "", models.StatusFailed)
 		result.Success = false
 		result.Error = "Ошибка чтения файла"
 		result.Message = "❌ Ошибка при чтении файла."
@@ -176,7 +176,7 @@ func (p *AudioProcessor) processJob(job queue.Job) queue.Result {
 	saluteFileID, err := p.saluteClient.UploadFile(job.FileName, fileData)
 	if err != nil {
 		logger.Error("Failed to upload file to SaluteSpeech", zap.Error(err))
-		p.audioRepo.UpdateResult(record.ID, "Ошибка загрузки в сервис распознавания", "", models.StatusFailed)
+		p.audioRepo.UpdateResult(record.ID, "Ошибка загрузки в сервис распознавания", "", "", models.StatusFailed)
 		result.Success = false
 		result.Error = "Ошибка загрузки в сервис распознавания"
 		result.Message = "❌ Не удалось загрузить файл в сервис распознавания."
@@ -189,11 +189,11 @@ func (p *AudioProcessor) processJob(job queue.Job) queue.Result {
 	taskID, err := p.saluteClient.CreateTask(saluteFileID, job.AudioEncoding)
 	if err != nil {
 		logger.Error("Failed to create recognition task", zap.Error(err))
-		p.audioRepo.UpdateResult(record.ID, "Ошибка создания задачи распознавания", "", models.StatusFailed)
-		p.audioRepo.UpdateResult(record.ID, "Ошибка скачивания файла", "", models.StatusFailed)
-		p.audioRepo.UpdateResult(record.ID, "Ошибка чтения файла", "", models.StatusFailed)
-		p.audioRepo.UpdateResult(record.ID, "Ошибка загрузки в сервис распознавания", "", models.StatusFailed)
-		p.audioRepo.UpdateResult(record.ID, "Ошибка создания задачи распознавания", "", models.StatusFailed)
+		p.audioRepo.UpdateResult(record.ID, "Ошибка создания задачи распознавания", "", "", models.StatusFailed)
+		p.audioRepo.UpdateResult(record.ID, "Ошибка скачивания файла", "", "", models.StatusFailed)
+		p.audioRepo.UpdateResult(record.ID, "Ошибка чтения файла", "", "", models.StatusFailed)
+		p.audioRepo.UpdateResult(record.ID, "Ошибка загрузки в сервис распознавания", "", "", models.StatusFailed)
+		p.audioRepo.UpdateResult(record.ID, "Ошибка создания задачи распознавания", "", "", models.StatusFailed)
 		result.Success = false
 		result.Error = "Ошибка создания задачи распознавания"
 		result.Message = "❌ Не удалось создать задачу на распознавание."
@@ -310,7 +310,7 @@ func (p *AudioProcessor) checkTaskStatuses() {
 			zap.Int64("record_id", rec.ID),
 			zap.String("task_id", rec.TaskID.String),
 		)
-		p.audioRepo.UpdateResult(rec.ID, "Превышено время ожидания распознавания (20 минут)", "", models.StatusFailed)
+		p.audioRepo.UpdateResult(rec.ID, "Превышено время ожидания распознавания (20 минут)", "", "", models.StatusFailed)
 
 		// Отправляем уведомление пользователю
 		if user, err := p.userRepo.GetUserByID(rec.UserID); err == nil && user != nil {
@@ -337,7 +337,7 @@ func (p *AudioProcessor) checkRecordStatus(rec models.AudioRecord) {
 	case "DONE":
 		if statusResp.Result.ResponseFileID == "" {
 			logger.Error("Task DONE but no response_file_id")
-			p.audioRepo.UpdateResult(rec.ID, "", "", models.StatusFailed)
+			p.audioRepo.UpdateResult(rec.ID, "", "", "", models.StatusFailed)
 			return
 		}
 
@@ -348,36 +348,60 @@ func (p *AudioProcessor) checkRecordStatus(rec models.AudioRecord) {
 			return
 		}
 
-		// Извлекаем нормализованный текст
-		text := extractTextFromResult(resultData)
-		if text == "" {
+		// ДЕБАГ: выводим первые 500 символов ответа
+		logger.Info("RAW RESPONSE FROM SALUTESPEECH",
+			zap.Int("size", len(resultData)),
+			zap.String("preview", string(resultData[:min(500, len(resultData))])),
+		)
+
+		// Парсим ответ SaluteSpeech
+		rawResponse, text, normalizedText := salutespeech.ParseRecognitionResponse(resultData)
+
+		logger.Info("PARSED RESULT",
+			zap.String("raw_response_preview", rawResponse[:min(200, len(rawResponse))]),
+			zap.String("text", text),
+			zap.String("normalized_text", normalizedText),
+		)
+
+		if text == "" && normalizedText == "" {
 			text = "Распознавание не вернуло текст."
+			normalizedText = text
 		}
 
-		// Генерируем выжимку (если есть GigaChat)
+		// Генерируем выжимку из нормализованного текста
 		var summary string
-		if p.gigaClient != nil {
+		if p.gigaClient != nil && normalizedText != "" {
 			logger.Info("Generating summary with GigaChat")
-			summary, err = p.gigaClient.GenerateSummary(text)
+			summary, err = p.gigaClient.GenerateSummary(normalizedText)
 			if err != nil {
 				logger.Error("Failed to generate summary", zap.Error(err))
 				summary = "Не удалось сгенерировать выжимку."
 			}
 		} else {
-			summary = "Выжимка недоступна (GigaChat не настроен)"
+			summary = "Выжимка недоступна (GigaChat не настроен или нет текста)"
 		}
 
-		// Сохраняем нормализованный текст и выжимку
-		err = p.audioRepo.UpdateResult(rec.ID, text, summary, models.StatusCompleted)
+		// Сохраняем результат в БД
+		err = p.audioRepo.UpdateResult(rec.ID, rawResponse, text, normalizedText, models.StatusCompleted)
 		if err != nil {
 			logger.Error("Failed to update record", zap.Error(err))
 			return
 		}
 
+		// Сохраняем выжимку (если есть)
+		if summary != "" && summary != "Выжимка недоступна (GigaChat не настроен или нет текста)" {
+			p.audioRepo.UpdateSummary(rec.ID, summary)
+		}
+
 		// Отправляем выжимку пользователю
 		if user, err := p.userRepo.GetUserByID(rec.UserID); err == nil && user != nil {
 			recipient := &tele.User{ID: user.TelegramID}
-			message := fmt.Sprintf("🎤 *Краткая выжимка встречи #%d:*\n\n%s\n\n---\n📝 Полный текст: `/get %d`", rec.ID, summary, rec.ID)
+			displayText := normalizedText
+			if displayText == "" {
+				displayText = text
+			}
+			message := fmt.Sprintf("🎤 *Результат распознавания встречи #%d:*\n\n%s\n\n---\n📌 Краткая выжимка: `/summury %d`\n📝 Полный текст: `/get %d`",
+				rec.ID, displayText, rec.ID, rec.ID)
 			p.bot.Send(recipient, message, tele.ModeMarkdown)
 		}
 
@@ -387,7 +411,12 @@ func (p *AudioProcessor) checkRecordStatus(rec models.AudioRecord) {
 			errMsg = "Неизвестная ошибка"
 		}
 		logger.Error("Task failed", zap.String("error", errMsg))
-		p.audioRepo.UpdateResult(rec.ID, errMsg, "", models.StatusFailed)
+		p.audioRepo.UpdateResult(rec.ID, "", "", "", models.StatusFailed)
+
+		if user, err := p.userRepo.GetUserByID(rec.UserID); err == nil && user != nil {
+			recipient := &tele.User{ID: user.TelegramID}
+			p.bot.Send(recipient, fmt.Sprintf("❌ Ошибка распознавания: %s", errMsg))
+		}
 
 	case "NEW", "RUNNING":
 		logger.Debug("Task still processing")

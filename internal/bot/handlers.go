@@ -136,8 +136,8 @@ func (h *BotHandlers) handleList(c tele.Context) error {
 			i+1, record.ID, statusEmoji, dateStr))
 
 		// Добавляем превью текста, если есть
-		if record.RecognitionText.Valid && len(record.RecognitionText.String) > 0 {
-			preview := record.RecognitionText.String
+		if record.Text.Valid && len(record.Text.String) > 0 {
+			preview := record.Text.String
 			if len(preview) > 50 {
 				preview = preview[:50] + "..."
 			}
@@ -218,18 +218,19 @@ func (h *BotHandlers) handleGet(c tele.Context) error {
 		return c.Send(statusMsg)
 	}
 
-	// Проверяем наличие текста
-	if !record.RecognitionText.Valid || record.RecognitionText.String == "" {
+	// Проверяем наличие текста (сначала normalized_text, потом text)
+	var text string
+	if record.NormalizedText.Valid && record.NormalizedText.String != "" {
+		text = record.NormalizedText.String
+	} else if record.Text.Valid && record.Text.String != "" {
+		text = record.Text.String
+	} else {
 		return c.Send("❌ Текст встречи отсутствует.")
 	}
 
-	// Формируем сообщение с текстом встречи
-	dateStr := record.CreatedAt.Format("02.01.2006 15:04")
-
-	// Экранируем текст для Markdown
-	escapedText := escapeMarkdown(record.RecognitionText.String)
-
 	// Формируем сообщение
+	dateStr := record.CreatedAt.Format("02.01.2006 15:04")
+	escapedText := escapeMarkdown(text)
 	message := fmt.Sprintf("📝 *Полный текст встречи от %s (ID: %d)*\n\n%s",
 		dateStr, record.ID, escapedText)
 
@@ -574,10 +575,9 @@ func (h *BotHandlers) handleSqueeze(c tele.Context) error {
 
 	// Если выжимки нет, генерируем её
 	if !record.Summary.Valid || record.Summary.String == "" {
-		if !record.RecognitionText.Valid || record.RecognitionText.String == "" {
+		if (!record.Text.Valid || record.Text.String == "") && (!record.NormalizedText.Valid || record.NormalizedText.String == "") {
 			return c.Send("❌ Текст встречи отсутствует. Не могу сгенерировать выжимку.")
 		}
-
 		if h.gigaClient == nil {
 			return c.Send("❌ Сервис GigaChat недоступен. Не могу сгенерировать выжимку.")
 		}
@@ -585,7 +585,12 @@ func (h *BotHandlers) handleSqueeze(c tele.Context) error {
 		logger.Info("No summary found, generating new one")
 		c.Send("🤔 Генерирую краткую выжимку встречи...")
 
-		summary, err := h.gigaClient.GenerateSummary(record.RecognitionText.String)
+		// Используем normalized_text, если есть, иначе text
+		textToSummarize := record.NormalizedText.String
+		if textToSummarize == "" {
+			textToSummarize = record.Text.String
+		}
+		summary, err := h.gigaClient.GenerateSummary(textToSummarize)
 		if err != nil {
 			logger.Error("Failed to generate summary", zap.Error(err))
 			return c.Send("❌ Ошибка при генерации выжимки. Попробуйте позже.")
@@ -596,10 +601,10 @@ func (h *BotHandlers) handleSqueeze(c tele.Context) error {
 			logger.Error("Failed to save summary", zap.Error(err))
 		}
 
-		// Формируем ответ
 		dateStr := record.CreatedAt.Format("02.01.2006 15:04")
+		escapedSummary := escapeMarkdown(record.Summary.String)
 		message := fmt.Sprintf("📝 *Краткая выжимка встречи от %s (ID: %d)*\n\n%s\n\n---\n📌 Полный текст: `/get %d`",
-			dateStr, record.ID, summary, record.ID)
+			dateStr, record.ID, escapedSummary, record.ID)
 
 		return c.Send(message, tele.ModeMarkdown)
 	}

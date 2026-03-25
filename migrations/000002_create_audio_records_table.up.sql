@@ -5,8 +5,10 @@ CREATE TABLE IF NOT EXISTS audio_records (
     salutespeech_file_id UUID,
     task_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
-    recognition_text TEXT,
-    summary TEXT, 
+    raw_response TEXT,           -- полный ответ от SaluteSpeech (JSON)
+    text TEXT,                   -- собранный текст из всех results.text
+    normalized_text TEXT,        -- собранный нормализованный текст из всех results.normalized_text
+    summary TEXT,                -- краткая выжимка от GigaChat
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
