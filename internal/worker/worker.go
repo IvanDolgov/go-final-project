@@ -1,10 +1,8 @@
 package worker
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/IvanDolgov/go-final-project/internal/gigachat"
@@ -421,51 +419,4 @@ func (p *AudioProcessor) checkRecordStatus(rec models.AudioRecord) {
 	case "NEW", "RUNNING":
 		logger.Debug("Task still processing")
 	}
-}
-
-// extractTextFromResult извлекает нормализованный текст из ответа API
-func extractTextFromResult(resultData []byte) string {
-	var response struct {
-		Result []struct {
-			Text           string  `json:"text"`
-			NormalizedText string  `json:"normalized_text,omitempty"`
-			Confidence     float64 `json:"confidence"`
-		} `json:"result"`
-	}
-
-	if err := json.Unmarshal(resultData, &response); err != nil {
-		// Если не удалось распарсить, возвращаем сырые данные
-		return string(resultData)
-	}
-
-	if len(response.Result) == 0 {
-		return ""
-	}
-
-	var texts []string
-	for _, res := range response.Result {
-		// Сначала пробуем normalized_text (более чистый вариант)
-		if res.NormalizedText != "" {
-			texts = append(texts, res.NormalizedText)
-		} else if res.Text != "" {
-			texts = append(texts, res.Text)
-		}
-	}
-
-	// Удаляем дубликаты
-	seen := make(map[string]bool)
-	uniqueTexts := []string{}
-	for _, s := range texts {
-		if !seen[s] && s != "" {
-			seen[s] = true
-			uniqueTexts = append(uniqueTexts, s)
-		}
-	}
-
-	if len(uniqueTexts) == 0 {
-		return ""
-	}
-
-	// Объединяем все результаты
-	return strings.Join(uniqueTexts, "\n")
 }
