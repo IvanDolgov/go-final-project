@@ -683,7 +683,7 @@ func (h *BotHandlers) handleFind(c tele.Context) error {
 		response.WriteString(fmt.Sprintf("📝 %s\n", snippet))
 
 		// Добавляем команды
-		response.WriteString(fmt.Sprintf("👉 `/get %d` | `/squeeze %d`\n\n", match.ID, match.ID))
+		response.WriteString(fmt.Sprintf("👉 `/get %d` | `/summary %d`\n\n", match.ID, match.ID))
 	}
 
 	// Отправляем результат
